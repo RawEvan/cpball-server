@@ -1,8 +1,10 @@
 import logging
 import tornado.ioloop
 import tornado.web
+import tornado.websocket
 import redis
 import json
+from ast import literal_eval
 from tornado.options import define, options
 from fuzzyfinder import fuzzyfinder
 
@@ -16,8 +18,12 @@ define("redis_host", default='localhost', help="redis host", type=str)
 r = redis.StrictRedis(host=options.redis_host, port=options.redis_port, db=0, decode_responses=True)
 
 
-class BaseHandler(tornado.web.RequestHandler):
+class BaseWebSocketHandler(tornado.websocket.WebSocketHandler):
 
+    def check_origin(self, origin):
+        return True
+
+class BaseRequestHandler(tornado.web.RequestHandler):
     def set_default_headers(self):
         self.set_header("Access-Control-Allow-Origin", "*")
         self.set_header("Access-Control-Allow-Headers", "*")
@@ -29,55 +35,52 @@ class BaseHandler(tornado.web.RequestHandler):
         self.finish()
 
 # FIXME: courutines
-class LoginHandler(BaseHandler):
+class LoginHandler(BaseRequestHandler):
 
     def get(self, user):
         # FIXME: thread-safe, session, password
         if not r.sismember('users', user):
             r.sadd('users', user)
+            logging.info("User login: %s", user)
+        if not r.hget('room', user):
+            room = {
+                'master': user,
+                'partner': None,
+                'state': 'waiting',
+            }
+            r.hset('room', user, json.dumps(room))
+            logging.info("Room set: %s", room)
         resp = json.dumps({'succ': True})
-        logging.info("User login: %s", user)
-        self.write({'succ': True})
-
-
-class HallHandler(BaseHandler):
-    def get(self):
-        count = r.scard('users')
-        users = r.srandmember('users', 10)
-        resp = json.dumps({
-            'count': count,
-            'users': users,
-        })
         self.write(resp)
 
 
-class SearchHandler(BaseHandler):
-    def get(self, user):
-        users = r.smembers('users')
-        found_users = list(fuzzyfinder(user, list(users)))
-        resp = json.dumps(found_users)
-        self.write(resp)
+class HallHandler(BaseWebSocketHandler):
+    def open(self):
+        print("WebSocket opened")
 
+    def on_message(self, message):
+        message = json.loads(message)
+        method = message.get('method', None)
+        if method == 'invite':
+            user = message.get('user', None)
+            partner = message.get('partner', None)
+            if not user or not partner or not r.sismember('users', user) or not r.sismember('users', partner):
+                resp = json.dumps({'method': 'invite', 'succ': False})
+                self.write(resp)
+            room = literal_eval(r.hget('room', user))
+            room['partner'] = partner
+            r.hset('room', user, json.dumps(room))
+            resp = json.dumps({'method': 'init', 'succ': True, 'room': room})
+            self.write_message(resp)
 
-# FIXME: use websocket
-class InviteHandler(tornado.web.RequestHandler):
-    def get(self):
-        self.write("hello world")
-
-
-
-class MainHandler(tornado.web.RequestHandler):
-    def get(self):
-        self.write("hello world")
+    def on_close(self):
+        print("WebSocket closed")
 
 
 def make_app():
     return tornado.web.Application([
-        (r"/", MainHandler),
         (r"/login/(.*)", LoginHandler),
         (r"/hall", HallHandler),
-        (r"/search/(.*)", SearchHandler),
-        (r"/invite/(.*)", InviteHandler),
     ])
 
 if __name__ == "__main__":
