@@ -141,5 +141,6 @@ def make_app():
 if __name__ == "__main__":
     tornado.options.parse_command_line()
     app = make_app()
+    logging.info('Listen on %s:%s' % (options.host, options.port))
     app.listen(options.port, address=options.host)
     tornado.ioloop.IOLoop.current().start()
