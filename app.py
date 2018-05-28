@@ -77,10 +77,62 @@ class HallHandler(BaseWebSocketHandler):
         print("WebSocket closed")
 
 
+class GameHandler(BaseWebSocketHandler):
+    waiters = set()
+
+    def open(self):
+        if r.hget('room', 'user1') and r.hget('room', 'user2'):
+            r.hdel('room', 'user1', 'user2', 'touch_loc1', 'touch_loc2')
+        GameHandler.waiters.add(self)
+        logging.info("WebSocket opened")
+
+    @classmethod
+    def send_updates(cls, chat):
+        logging.info("sending message to %d waiters", len(cls.waiters))
+        for waiter in cls.waiters:
+            try:
+                waiter.write_message(chat)
+            except:
+                logging.error("Error sending message", exc_info=True)
+
+    def on_message(self, message):
+        message = json.loads(message)
+        method = message.get('method', None)
+        if method == 'init':
+            if not r.hget('room', 'user1'):
+                r.hset('room', 'user1', message['user'])
+            elif not r.hget('room', 'user2') and r.hget('room', 'user1') != message['user']:
+                r.hset('room', 'user2', message['user'])
+            else:
+                self.write_message('Init failed')
+            GameHandler.send_updates(json.dumps({
+                'method': 'init',
+                'user1': r.hget('room', 'user1'),
+                'user2': r.hget('room', 'user2'),
+            }))
+
+        elif method == 'play':
+            touch_role = message['touch_role']
+            r.hset('room', touch_role, json.dumps(message['touch_loc']))
+            GameHandler.send_updates(json.dumps({
+                'method': 'play',
+                'touch_loc1': json.loads(r.hget('room', 'touch_loc1')),
+                'touch_loc2': json.loads(r.hget('room', 'touch_loc2')),
+            }))
+        else:
+            pass
+
+
+    def on_close(self):
+        GameHandler.waiters.remove(self)
+        logging.info("WebSocket closed")
+
+
 def make_app():
     return tornado.web.Application([
         (r"/login/(.*)", LoginHandler),
         (r"/hall", HallHandler),
+        (r"/game", GameHandler),
     ])
 
 if __name__ == "__main__":
