@@ -114,11 +114,14 @@ class GameHandler(BaseWebSocketHandler):
         elif method == 'play':
             touch_role = message['touch_role']
             r.hset('room', touch_role, json.dumps(message['touch_loc']))
-            GameHandler.send_updates(json.dumps({
-                'method': 'play',
-                'touch_loc1': json.loads(r.hget('room', 'touch_loc1')),
-                'touch_loc2': json.loads(r.hget('room', 'touch_loc2')),
-            }))
+            touch_loc1 = r.hget('room', 'touch_loc1')
+            touch_loc2 = r.hget('room', 'touch_loc2')
+            if touch_loc1 and touch_loc2:
+                GameHandler.send_updates(json.dumps({
+                    'method': 'play',
+                    'touch_loc1': json.loads(touch_loc1),
+                    'touch_loc2': json.loads(touch_loc2),
+                }))
         else:
             pass
 
