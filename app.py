@@ -41,15 +41,7 @@ class LoginHandler(BaseRequestHandler):
         # FIXME: thread-safe, session, password
         if not r.sismember('users', user):
             r.sadd('users', user)
-            logging.info("User login: %s", user)
-        if not r.hget('room', user):
-            room = {
-                'master': user,
-                'partner': None,
-                'state': 'waiting',
-            }
-            r.hset('room', user, json.dumps(room))
-            logging.info("Room set: %s", room)
+            logging.info("User added to queue: %s", user)
         resp = json.dumps({'succ': True})
         self.write(resp)
 
@@ -80,55 +72,89 @@ class HallHandler(BaseWebSocketHandler):
 class GameHandler(BaseWebSocketHandler):
     waiters = set()
 
+    def __init__(self, application, request, **kwargs):
+        self.user = None
+        self.room = None
+        super(GameHandler, self).__init__(application, request, **kwargs)
+
     def open(self):
-        if r.hget('room', 'user1') and r.hget('room', 'user2'):
-            r.hdel('room', 'user1', 'user2', 'touch_loc1', 'touch_loc2')
         GameHandler.waiters.add(self)
         logging.info("WebSocket opened")
 
     @classmethod
-    def send_updates(cls, chat):
-        logging.info("sending message to %d waiters", len(cls.waiters))
-        for waiter in cls.waiters:
+    def send_broadcast(cls, msg, room, log=True):
+        waiters = [w for w in cls.waiters if w.room == room]
+        for waiter in waiters:
             try:
-                waiter.write_message(chat)
+                waiter.write_message(msg)
+                if log:
+                    logging.info("sending message to %s", waiter.user)
             except:
                 logging.error("Error sending message", exc_info=True)
+
+    @classmethod
+    def set_waiter_room(cls, user, room):
+        for w in cls.waiters:
+            if w.user == user:
+                w.room = room
+                break
+
+    def init_room(self, message):
+        user = message['user']
+        self.user = user
+        users = r.sscan('users')[1]
+        other_users = [u for u in users if u != user]
+        master = other_users and other_users[0]
+        if master:
+            # set the first user as the master and the room key
+            r.hset('room', master, user)
+            logging.info("Room created: %s, %s", master, user)
+            r.srem('users', master)
+            logging.info("User removed from queue: %s", master)
+            r.srem('users', user)
+            logging.info("User removed from queue: %s", user)
+            result = {
+                'method': 'init',
+                'user1': master,
+                'user2': user,
+            }
+            self.room = master
+            GameHandler.set_waiter_room(master, self.room)
+            GameHandler.send_broadcast(json.dumps(result), self.room)
+        else:
+            result = {
+                'method': 'wait',
+            }
+            self.write_message(json.dumps(result))
+
+
+    def play(self, message):
+        room = message['room']
+        GameHandler.send_broadcast(message, room, log=False)
 
     def on_message(self, message):
         message = json.loads(message)
         method = message.get('method', None)
+        self.user = message['user']
         if method == 'init':
-            if not r.hget('room', 'user1'):
-                r.hset('room', 'user1', message['user'])
-            elif not r.hget('room', 'user2') and r.hget('room', 'user1') != message['user']:
-                r.hset('room', 'user2', message['user'])
-            else:
-                self.write_message('Init failed')
-            GameHandler.send_updates(json.dumps({
-                'method': 'init',
-                'user1': r.hget('room', 'user1'),
-                'user2': r.hget('room', 'user2'),
-            }))
-
+            self.init_room(message)
         elif method == 'play':
-            touch_role = message['touch_role']
-            r.hset('room', touch_role, json.dumps(message['touch_loc']))
-            touch_loc1 = r.hget('room', 'touch_loc1')
-            touch_loc2 = r.hget('room', 'touch_loc2')
-            if touch_loc1 and touch_loc2:
-                GameHandler.send_updates(json.dumps({
-                    'method': 'play',
-                    'touch_loc1': json.loads(touch_loc1),
-                    'touch_loc2': json.loads(touch_loc2),
-                }))
+            self.play(message)
         else:
             pass
 
 
     def on_close(self):
         GameHandler.waiters.remove(self)
-        logging.info("WebSocket closed")
+        if r.hdel('room', self.user):
+            logging.info("Room closed: %s" % self.user)
+            result = {
+                'method': 'stop',
+            }
+            GameHandler.send_broadcast(json.dumps(result), self.room)
+        if r.sismember('users', self.user):
+            r.srem('users', self.user)
+            logging.info("User logout: %s" % self.user)
 
 
 def make_app():
