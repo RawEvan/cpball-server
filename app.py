@@ -11,7 +11,7 @@ from fuzzyfinder import fuzzyfinder
 define("port", default=8888, help="run on the given port", type=int)
 define("host", default='0.0.0.0', help="run on the given host", type=str)
 define("redis_port", default=6379, help="redis port", type=int)
-define("redis_host", default='localhost', help="redis host", type=str)
+define("redis_host", default='redis', help="redis host", type=str)
 
 
 
