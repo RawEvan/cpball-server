@@ -137,7 +137,7 @@ class GameHandler(BaseWebSocketHandler):
         method = message.get('method', None)
         if method == 'init':
             self.init_room(message)
-        elif method == 'play':
+        elif method in ['play', 'food']:
             self.play(message)
         else:
             pass
