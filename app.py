@@ -130,12 +130,11 @@ class GameHandler(BaseWebSocketHandler):
 
     def play(self, message):
         room = message['room']
-        GameHandler.send_broadcast(message, room, log=False)
+        GameHandler.send_broadcast(message, room, log=True)
 
     def on_message(self, message):
         message = json.loads(message)
         method = message.get('method', None)
-        self.user = message['user']
         if method == 'init':
             self.init_room(message)
         elif method == 'play':
