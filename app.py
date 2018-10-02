@@ -11,9 +11,9 @@ from fuzzyfinder import fuzzyfinder
 define("port", default=8888, help="run on the given port", type=int)
 define("host", default='0.0.0.0', help="run on the given host", type=str)
 define("redis_port", default=6379, help="redis port", type=int)
-define("redis_host", default='redis', help="redis host", type=str)
+define("redis_host", default='127.0.0.1', help="redis host", type=str)
 
-
+logging.getLogger().setLevel(logging.INFO)
 
 r = redis.StrictRedis(host=options.redis_host, port=options.redis_port, db=0, decode_responses=True)
 
@@ -88,9 +88,9 @@ class GameHandler(BaseWebSocketHandler):
             try:
                 waiter.write_message(msg)
                 if log:
-                    logging.info("sending message to %s", waiter.user)
+                    logging.info("sending broadcast to %s", waiter.user)
             except:
-                logging.error("Error sending message", exc_info=True)
+                logging.error("Error sending broadcast", exc_info=True)
 
     @classmethod
     def set_waiter_room(cls, user, room):
@@ -100,11 +100,26 @@ class GameHandler(BaseWebSocketHandler):
                 break
 
     def init_room(self, message):
-        user = message['user']
+        user = message.get('sender')
+        # debug
+        if message.get('debug') and not user:
+            user = str(r.scard('users') + 1)
+            message['sender'] = user
+            if not r.sismember('users', user):
+                r.sadd('users', '1')
+                logging.info("User added to queue: %s", user)
+
         self.user = user
         users = r.sscan('users')[1]
         other_users = [u for u in users if u != user]
         master = other_users and other_users[0]
+        # insert server message
+        message['server'] = {
+            'user1': master,
+            'user2': user,
+            'room': master,
+            'owner': master,
+        }
         if master:
             # set the first user as the master and the room key
             r.hset('room', master, user)
@@ -113,31 +128,68 @@ class GameHandler(BaseWebSocketHandler):
             logging.info("User removed from queue: %s", master)
             r.srem('users', user)
             logging.info("User removed from queue: %s", user)
-            result = {
-                'method': 'init',
-                'user1': master,
-                'user2': user,
-            }
+
+            message['server']['method'] = 'start'
             self.room = master
             GameHandler.set_waiter_room(master, self.room)
-            GameHandler.send_broadcast(json.dumps(result), self.room)
+            GameHandler.send_broadcast(json.dumps(message), self.room)
         else:
-            result = {
-                'method': 'wait',
-            }
-            self.write_message(json.dumps(result))
+            message['server']['method'] = 'init'
+            self.write_message(json.dumps(message))
+            logging.info("sending message to %s", user)
 
 
     def play(self, message):
-        room = message['room']
+        room = message.get('room')
+        # FIXME
+        message['server'] = {
+            'method': 'play',
+            'user1': '1',
+            'user2': '2',
+            'owner': '1',
+            'room': room,
+        }
+        # TODO: members' data will only be sent to owner,
+        # while onwer's data sent to all members
         GameHandler.send_broadcast(message, room, log=True)
 
     def on_message(self, message):
+        """
+        
+        :param message: 
+        e.g.:
+        {
+            'sender': '1',
+            // client event (current client state)
+            'event': 'init',
+            'room': '1',
+            'server': {
+                'method': 'start',
+                'user1': '1',
+                'user2': '2',
+                'owner': '1',
+                'room': '1',
+            },
+            'client': {
+                '1': { //uid
+                    'name': '1',
+                    'touch_loc': this.touchLoc,
+                },
+                '2': {
+                    'name': '2',
+                }
+            },
+            'food': {
+                'location': this.touchLoc,
+            }
+        };
+        :return: 
+        """
         message = json.loads(message)
-        method = message.get('method', None)
-        if method == 'init':
+        event = message.get('event', None)
+        if event == 'init':
             self.init_room(message)
-        elif method in ['play', 'food']:
+        elif event == 'play':
             self.play(message)
         else:
             pass
