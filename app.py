@@ -82,8 +82,9 @@ class GameHandler(BaseWebSocketHandler):
         logging.info("WebSocket opened")
 
     @classmethod
-    def send_broadcast(cls, msg, room, log=True):
-        waiters = [w for w in cls.waiters if w.room == room]
+    def send_broadcast(cls, msg, room, log=True, except_user=None):
+        except_user = except_user or []
+        waiters = [w for w in cls.waiters if w.room == room and w.user not in except_user]
         for waiter in waiters:
             try:
                 waiter.write_message(msg)
@@ -103,10 +104,10 @@ class GameHandler(BaseWebSocketHandler):
         user = message.get('sender')
         # debug
         if message.get('debug') and not user:
-            user = str(r.scard('users') + 1)
+            user = 'User' + str(r.scard('users') + 1)
             message['sender'] = user
             if not r.sismember('users', user):
-                r.sadd('users', '1')
+                r.sadd('users', user)
                 logging.info("User added to queue: %s", user)
 
         self.user = user
@@ -120,6 +121,9 @@ class GameHandler(BaseWebSocketHandler):
             'room': master,
             'owner': master,
         }
+        message['server']['method'] = 'init'
+        self.write_message(json.dumps(message))
+        logging.info("sending message to %s", user)
         if master:
             # set the first user as the master and the room key
             r.hset('room', master, user)
@@ -133,10 +137,6 @@ class GameHandler(BaseWebSocketHandler):
             self.room = master
             GameHandler.set_waiter_room(master, self.room)
             GameHandler.send_broadcast(json.dumps(message), self.room)
-        else:
-            message['server']['method'] = 'init'
-            self.write_message(json.dumps(message))
-            logging.info("sending message to %s", user)
 
 
     def play(self, message):
@@ -151,7 +151,7 @@ class GameHandler(BaseWebSocketHandler):
         }
         # TODO: members' data will only be sent to owner,
         # while onwer's data sent to all members
-        GameHandler.send_broadcast(message, room, log=True)
+        GameHandler.send_broadcast(message, room, log=True, except_user=[self.user])
 
     def on_message(self, message):
         """
